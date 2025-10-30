@@ -207,76 +207,59 @@ def index():
                 field_preview[fmp_field] = val
             log(json.dumps({"sg_id": e.get("id"), "mapped_fields": field_preview}, indent=2))
 
-        # Build FileMaker records
+        # ---- Build FileMaker records ----
         records_to_create = []
         created_meta = []
         skipped_count = 0
+
         for ent in sg_results:
             fieldData = {}
+
             for sg_key, fmp_field in FIELD_MAP.items():
-                if sg_key not in ent:
+                if sg_key in ('shot', 'sg_latest_version'):
                     continue
+                
                 sg_val = ent.get(sg_key)
-
-                # Special mapping (like 'shot')
-                if sg_key in SPECIAL_SG_KEYS:
-                    try:
-                        transformed = SPECIAL_SG_KEYS[sg_key][1](sg_val)
-                    except Exception:
-                        transformed = None
-                    if transformed is None:
-                        continue
-                    fieldData[fmp_field] = transformed
-                    continue
-
                 value = sg_value_to_fmp_value(sg_key, sg_val)
-                if value is None:
-                    continue
-                fieldData[fmp_field] = value
+                if value is not None:
+                    fieldData[fmp_field] = value
+            
+        # ----- Plate Name from latest_version -----
+        latest_ver = ent.get('latest_version')
+        if latest_ver:
+            fieldData['Plate Name'] = latest_ver.get('code') or latest_ver.get('id')
 
-            if not fieldData:
-                skipped_count += 1
-                created_meta.append({
-                    "sg_id": ent.get("id"),
-                    "status": "skipped",
-                    "reason": "no mapped fields present"
-                })
-                continue
+        # ----- ForeignKey from linked Shot -----
+        shot_ref = ent.get('shot')
+        if shot_ref:
+            fieldData['ForeignKey'] = shot_ref.get('id')
 
-            records_to_create.append({"fieldData": fieldData})
+        # Skip if no data
+        if not fieldData:
+            skipped_count += 1
             created_meta.append({
                 "sg_id": ent.get("id"),
-                "status": "queued",
-                "fields": list(fieldData.keys())
+                "status": "skipped",
+                "reason": "no mapped fields present"
             })
+            continue
 
-        # Remove empty records just in case
-        records_to_create = [r for r in records_to_create if "fieldData" in r and r["fieldData"]]
+        records_to_create.append({"fieldData": fieldData})
+        created_meta.append({
+            "sg_id": ent.get("id"),
+            "status": "queued",
+            "fields": list(fieldData.keys())
+        })
 
-        if not records_to_create:
-            msg = {
-                "ok": True,
-                "created": 0,
-                "skipped": skipped_count,
-                "details": created_meta,
-                "error": "No records had fieldData to send to FileMaker"
-            }
-            if request.args.get("html") == "1":
-                html = render_template_string(
-                    "<h2>Element → FileMaker</h2><p>No records to create. Skipped {{skipped}}.</p>",
-                    skipped=skipped_count
-                )
-                return Response(html, mimetype="text/html")
-            return jsonify(msg)
-
-        # --- DEBUG: show payload in browser and skip sending ---
+        # Debug preview
         if debug_mode:
-            debug_payload = json.dumps(records_to_create, indent=2)
-            return Response(
-                "<h2>DEBUG: Records about to be sent to FileMaker</h2>"
-                f"<pre>{debug_payload}</pre>",
-                mimetype="text/html"
-            )
+              debug_payload = json.dumps(records_to_create, indent=2)
+                log("DEBUG: Records about to be sent to FileMaker:\n", debug_payload)
+                    return Response(
+                        "<h2>DEBUG: Records about to be sent to FileMaker</h2>"
+                        f"<pre>{debug_payload}</pre>",
+                        mimetype="text/html"
+                    )
 
         # --- Authenticate and send to FileMaker ---
         token = None
