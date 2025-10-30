@@ -154,7 +154,7 @@ def sg_value_to_fmp_value(sg_field_code, sg_value):
 # Flask endpoint
 # ---------------------------
 
-@app.route("/", methods=["POST", "GET"])
+@app.route("/send_plates", methods=["POST", "GET"])
 def index():
     """
     POST payload expectations:
