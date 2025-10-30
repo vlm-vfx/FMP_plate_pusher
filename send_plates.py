@@ -1,4 +1,3 @@
-
 import os
 import json
 import traceback
@@ -103,8 +102,12 @@ def fm_create_records(token, records_payload):
     Endpoint: POST /fmi/data/vLatest/databases/{db}/layouts/{layout}/records
     """
     url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/layouts/{FMP_LAYOUT}/records"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    r = requests.post(url, headers=headers, json={"records": records_payload})
+        headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    payload = {"records": records_payload}
+    r = requests.post(url, headers=headers, json=payload)
     return r
 
 def fm_close_session(token):
@@ -237,6 +240,25 @@ def index():
 
         if not records_to_create:
             msg = {"ok": True, "created": 0, "skipped": skipped_count, "details": created_meta}
+            if request.args.get("html") == "1":
+                html = render_template_string(
+                    "<h2>Element → FileMaker</h2><p>No records to create. Skipped {{skipped}}.</p>",
+                    skipped=skipped_count
+                )
+                return Response(html, mimetype="text/html")
+            return jsonify(msg)
+
+        # --- SAFEGUARD: remove any empty or invalid records ---
+        records_to_create = [r for r in records_to_create if "fieldData" in r and r["fieldData"]]
+
+        if not records_to_create:
+            msg = {
+                "ok": True,
+                "created": 0,
+                "skipped": skipped_count,
+                "details": created_meta,
+                "error": "No records had fieldData to send to FileMaker"
+            }
             if request.args.get("html") == "1":
                 html = render_template_string(
                     "<h2>Element → FileMaker</h2><p>No records to create. Skipped {{skipped}}.</p>",
