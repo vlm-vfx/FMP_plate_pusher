@@ -78,19 +78,14 @@ def build_fields_to_query():
     return list(dict.fromkeys(fields))  # remove duplicates while preserving order
 
 def fm_get_token():
-    """
-    Create a FileMaker Data API session (Basic Auth method).
-    Works for FMS 18–20.
-    """
-    if not all([FMP_BASE_URL, FMP_DATABASE, FMP_USER, FMP_PASSWORD]):
-        raise RuntimeError("FileMaker credentials / URL / DB not fully configured in env vars.")
-
-    import base64
-    sess_url = f"{FMP_BASE_URL.rstrip('/')}/fmi/data/vLatest/databases/{FMP_DATABASE}/sessions"
-
+    """Authenticate and return FMP session token"""
+    sess_url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/sessions"
     auth_string = f"{FMP_USER}:{FMP_PASSWORD}"
-    auth_encoded = base64.b64encode(auth_string.encode()).decode("utf-8")
-    headers = {"Authorization": f"Basic {auth_encoded}"}
+    auth_base64 = b64encode(auth_string.encode("utf-8")).decode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Basic {auth_base64}",
+    }
 
     r = requests.post(sess_url, headers=headers)
     if r.status_code not in (200, 201):
@@ -107,13 +102,13 @@ def fm_create_records(token, records_payload):
     POST records to FileMaker layout.
     Endpoint: POST /fmi/data/vLatest/databases/{db}/layouts/{layout}/records
     """
-    url = f"{FMP_BASE_URL.rstrip('/')}/fmi/data/vLatest/databases/{FMP_DATABASE}/layouts/{FMP_LAYOUT}/records"
+    url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/layouts/{FMP_LAYOUT}/records"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     r = requests.post(url, headers=headers, json={"records": records_payload})
     return r
 
 def fm_close_session(token):
-    url = f"{FMP_BASE_URL.rstrip('/')}/fmi/data/vLatest/databases/{FMP_DATABASE}/sessions/{token}"
+    url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/sessions/{token}"
     headers = {"Authorization": f"Bearer {token}"}
     try:
         requests.delete(url, headers=headers)
