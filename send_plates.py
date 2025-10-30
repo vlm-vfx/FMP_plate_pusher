@@ -22,7 +22,7 @@ FMP_LAYOUT = os.environ.get("FMP_LAYOUT")      # layout name for creating record
 FMP_USER = os.environ.get("FMP_USER")
 FMP_PASSWORD = os.environ.get("FMP_PASSWORD")
 
-DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes") or request.args.get("debug") == "1"
 
 # Field mapping derived from your CSV.
 # dict: SG field code -> FMP field name
