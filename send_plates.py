@@ -85,7 +85,6 @@ def fm_get_token():
         "Content-Type": "application/json",
         "Authorization": f"Basic {auth_base64}",
     }
-
     r = requests.post(sess_url, headers=headers)
     if r.status_code not in (200, 201):
         raise RuntimeError(f"Failed to create FileMaker session: {r.status_code} {r.text}")
@@ -102,7 +101,7 @@ def fm_create_records(token, records_payload):
     Endpoint: POST /fmi/data/vLatest/databases/{db}/layouts/{layout}/records
     """
     url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/layouts/{FMP_LAYOUT}/records"
-        headers = {
+    headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
