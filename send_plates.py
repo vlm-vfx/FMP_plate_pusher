@@ -54,15 +54,29 @@ def get_shotgun():
     return Shotgun(SG_URL, SG_SCRIPT_NAME, SG_SCRIPT_KEY)
 
 def build_fields_to_query():
-    fields = list(FIELD_MAP.keys())
-    # Replace 'sg_latest_version' with actual nested field
-    # SG uses 'latest_version' as the entity ref
-    if 'sg_latest_version' in fields:
-        fields.remove('sg_latest_version')
-        fields.append('latest_version')
-    if 'id' not in fields:
-        fields.append('id')
-    return list(dict.fromkeys(fields))
+    """
+    Build a list of SG field codes to request from ShotGrid based on FIELD_MAP.
+    For nested/special keys, include the high-level field code (e.g. 'shot'),
+    and for sg_latest_version, include its 'code' field.
+    """
+    fields = []
+
+    for sg_key in FIELD_MAP.keys():
+        if sg_key == "sg_latest_version":
+            # Ask ShotGrid to return the nested 'code' for the latest_version entity link
+            fields.append("sg_latest_version.Code")
+        elif sg_key == "shot":
+            # Ensure we get the Shot entity id and name
+            fields.append("shot.id")
+            fields.append("shot.code")
+        else:
+            fields.append(sg_key)
+
+    # Always include id for debugging / reference
+    if "id" not in fields:
+        fields.append("id")
+
+    return list(dict.fromkeys(fields))  # remove duplicates while preserving order
 
 def fm_get_token():
     sess_url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/sessions"
