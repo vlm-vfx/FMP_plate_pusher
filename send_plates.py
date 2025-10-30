@@ -79,20 +79,24 @@ def build_fields_to_query():
 
 def fm_get_token():
     """
-    Create a FileMaker Data API session and return the token.
-    Assumes endpoint: POST {FMP_BASE_URL}/fmi/data/vLatest/databases/{db}/sessions
-    with JSON {"username":..., "password":...}
+    Create a FileMaker Data API session (Basic Auth method).
+    Works for FMS 18–20.
     """
     if not all([FMP_BASE_URL, FMP_DATABASE, FMP_USER, FMP_PASSWORD]):
         raise RuntimeError("FileMaker credentials / URL / DB not fully configured in env vars.")
 
+    import base64
     sess_url = f"{FMP_BASE_URL.rstrip('/')}/fmi/data/vLatest/databases/{FMP_DATABASE}/sessions"
-    payload = {"username": FMP_USER, "password": FMP_PASSWORD}
-    r = requests.post(sess_url, json=payload)
+
+    auth_string = f"{FMP_USER}:{FMP_PASSWORD}"
+    auth_encoded = base64.b64encode(auth_string.encode()).decode("utf-8")
+    headers = {"Authorization": f"Basic {auth_encoded}"}
+
+    r = requests.post(sess_url, headers=headers)
     if r.status_code not in (200, 201):
         raise RuntimeError(f"Failed to create FileMaker session: {r.status_code} {r.text}")
+
     data = r.json()
-    # FileMaker returns token at data["response"]["token"]
     token = data.get("response", {}).get("token")
     if not token:
         raise RuntimeError(f"No token found in FileMaker session response: {data}")
