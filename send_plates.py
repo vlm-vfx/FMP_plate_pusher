@@ -152,6 +152,17 @@ def sg_value_to_fmp_value(sg_field_code, sg_value):
         return ", ".join(out)
     return sg_value
 
+def get_sg_connection():
+    """Return an authenticated ShotGrid API connection."""
+    SG_URL = os.environ.get("SG_URL")
+    SG_SCRIPT_NAME = os.environ.get("SG_SCRIPT_NAME")
+    SG_API_KEY = os.environ.get("SG_API_KEY")
+
+    if not all([SG_URL, SG_SCRIPT_NAME, SG_API_KEY]):
+        raise RuntimeError("Missing SG_URL, SG_SCRIPT_NAME, or SG_API_KEY in environment.")
+
+    return Shotgun(SG_URL, script_name=SG_SCRIPT_NAME, api_key=SG_API_KEY)
+
 # ---------------------------
 # Flask endpoint
 # ---------------------------
