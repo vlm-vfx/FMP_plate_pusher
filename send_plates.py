@@ -22,8 +22,6 @@ FMP_LAYOUT = os.environ.get("FMP_LAYOUT")      # layout name for creating record
 FMP_USER = os.environ.get("FMP_USER")
 FMP_PASSWORD = os.environ.get("FMP_PASSWORD")
 
-DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes") or request.args.get("debug") == "1"
-
 # Field mapping derived from your CSV.
 # dict: SG field code -> FMP field name
 FIELD_MAP = {
@@ -163,6 +161,9 @@ def index():
     - Form: ids=123,456,789
     GET (for easy manual testing) accepts ?ids=123,456&entity_type=Element
     """
+    # DEBUG = env var OR URL param
+    debug_mode = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes") or request.args.get("debug") == "1"
+
     try:
         # parse ids
         entity_type = request.values.get("entity_type", "Element")
@@ -267,7 +268,7 @@ def index():
             return jsonify(msg)
         
         # --- DEBUG: print payload before sending ---
-        if request.args.get("debug") == "1":
+        if debug_mode:
             debug_payload = json.dumps(records_to_create, indent=2)
             return Response(
                 "<h2>DEBUG: Records about to be sent to FileMaker</h2>"
