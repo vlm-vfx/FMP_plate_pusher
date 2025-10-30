@@ -162,7 +162,7 @@ def index():
     GET (for easy manual testing) accepts ?ids=123,456&entity_type=Element
     """
     # DEBUG = env var OR URL param
-    debug_mode = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes") or request.args.get("debug") == "1"
+    debug_mode = request.args.get("debug") == "1"
 
     try:
         # parse ids
