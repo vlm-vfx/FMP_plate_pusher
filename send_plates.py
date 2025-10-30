@@ -253,13 +253,13 @@ def index():
 
         # Debug preview
         if debug_mode:
-              debug_payload = json.dumps(records_to_create, indent=2)
-                log("DEBUG: Records about to be sent to FileMaker:\n", debug_payload)
-                    return Response(
-                        "<h2>DEBUG: Records about to be sent to FileMaker</h2>"
-                        f"<pre>{debug_payload}</pre>",
-                        mimetype="text/html"
-                    )
+            debug_payload = json.dumps(records_to_create, indent=2)
+            log("DEBUG: Records about to be sent to FileMaker:\n", debug_payload)
+            return Response(
+                "<h2>DEBUG: Records about to be sent to FileMaker</h2>"
+                f"<pre>{debug_payload}</pre>",
+                mimetype="text/html"
+            )
 
         # --- Authenticate and send to FileMaker ---
         token = None
