@@ -265,6 +265,13 @@ def index():
                 )
                 return Response(html, mimetype="text/html")
             return jsonify(msg)
+        
+        # --- DEBUG: print payload before sending ---
+        if DEBUG:
+            print("\n--- DEBUG: Records about to be sent to FileMaker ---")
+            for idx, rec in enumerate(records_to_create, start=1):
+                print(f"Record {idx}: {json.dumps(rec, indent=2)}")
+            print("--- END DEBUG ---\n")
 
         # Authenticate to FileMaker and create records
         token = None
