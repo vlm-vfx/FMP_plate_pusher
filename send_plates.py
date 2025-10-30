@@ -193,6 +193,20 @@ def index():
         sg_results = sg.find(entity_type, filters, fields)
         log("Found", len(sg_results), "results")
 
+        # --- DEBUG: show actual SG values for each element ---
+        log("SG element fields for debug:")
+        for e in sg_results:
+            log(json.dumps(e, indent=2))
+
+        # --- Optional: show mapping -> FMP ---
+        log("Preview of field mapping for each element:")
+        for e in sg_results:
+            field_preview = {}
+            for sg_key, fmp_field in FIELD_MAP.items():
+                val = sg_value_to_fmp_value(sg_key, e.get(sg_key))
+                field_preview[fmp_field] = val
+            log(json.dumps({"sg_id": e.get("id"), "mapped_fields": field_preview}, indent=2))
+
         # Build FileMaker records
         records_to_create = []
         created_meta = []
