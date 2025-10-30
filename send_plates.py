@@ -56,27 +56,54 @@ def get_shotgun():
 def build_fields_to_query():
     """
     Build a list of SG field codes to request from ShotGrid based on FIELD_MAP.
-    For nested/special keys, include the high-level field code (e.g. 'shot'),
-    and for sg_latest_version, include its 'code' field.
+    Handles nested entity links properly (sg_latest_version and shot).
     """
     fields = []
 
     for sg_key in FIELD_MAP.keys():
-        if sg_key == "sg_latest_version":
-            # Ask ShotGrid to return the nested 'code' for the latest_version entity link
-            fields.append("sg_latest_version.Code")
-        elif sg_key == "shot":
-            # Ensure we get the Shot entity id and name
-            fields.append("shot.id")
-            fields.append("shot.code")
+        # For nested link fields, we’ll add the main entity field only.
+        # We'll handle their subfields via 'additional_filter_presets' in the sg.find() call.
+        if sg_key in ("sg_latest_version", "shot"):
+            fields.append(sg_key)
         else:
             fields.append(sg_key)
 
-    # Always include id for debugging / reference
     if "id" not in fields:
         fields.append("id")
 
     return list(dict.fromkeys(fields))  # remove duplicates while preserving order
+
+
+def get_elements(sg, selected_ids=None):
+    """
+    Query ShotGrid for Elements, optionally limited to a selected list of IDs.
+    """
+    filters = []
+    if selected_ids:
+        filters = [["id", "in", selected_ids]]
+
+    fields = build_fields_to_query()
+    print(f"Querying ShotGrid fields: {fields}")
+
+    # The 'additional_filter_presets' trick won't help here,
+    # so we request nested subfields explicitly via 'fields' argument as dicts.
+    # This is the correct way to fetch linked entity subfields like code/id.
+    elements = sg.find(
+        "Element",
+        filters,
+        fields,
+        additional_fields=[
+            {"field_name": "sg_latest_version", "sub_fields": ["code", "id"]},
+            {"field_name": "shot", "sub_fields": ["code", "id"]},
+        ],
+    )
+
+    print(f"Found {len(elements)} results")
+    print("SG element fields for debug:")
+    for el in elements:
+        print(json.dumps(el, indent=2))
+
+    return elements
 
 def fm_get_token():
     sess_url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/sessions"
