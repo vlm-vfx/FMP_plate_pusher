@@ -1,7 +1,7 @@
 import os
 import json
 import traceback
-from flask import Flask, request, jsonify, Response, render_template_string
+from flask import Flask, request, jsonify, Response
 import requests
 from shotgun_api3 import Shotgun
 from base64 import b64encode
@@ -16,14 +16,13 @@ SG_URL = os.environ.get("SG_URL")
 SG_SCRIPT_NAME = os.environ.get("SG_SCRIPT_NAME")
 SG_SCRIPT_KEY = os.environ.get("SG_SCRIPT_KEY")
 
-FMP_BASE_URL = os.environ.get("FMP_BASE_URL")  # e.g. https://filemaker.example.com
-FMP_DATABASE = os.environ.get("FMP_DATABASE")  # db name
-FMP_LAYOUT = os.environ.get("FMP_LAYOUT")      # layout name for creating records
+FMP_BASE_URL = os.environ.get("FMP_BASE_URL")
+FMP_DATABASE = os.environ.get("FMP_DATABASE")
+FMP_LAYOUT = os.environ.get("FMP_LAYOUT")
 FMP_USER = os.environ.get("FMP_USER")
 FMP_PASSWORD = os.environ.get("FMP_PASSWORD")
 
 # Field mapping derived from your CSV.
-# dict: SG field code -> FMP field name
 FIELD_MAP = {
     "sg_latest_version": "Plate Name",
     "sg_slate": "Slate",
@@ -37,13 +36,11 @@ FIELD_MAP = {
     "sg_tail_out": "Tail Out",
     "sg_lut": "LUT",
     "description": "Notes",
-    # shot.id is special / nested - we'll include shot in query and map shot.id -> ForeignKey
     "shot": "ForeignKey",
 }
 
-# If the mapping uses a special key referring to nested values, handle here:
+# Special key transforms
 SPECIAL_SG_KEYS = {
-    # if we query "shot" then we will extract shot['id'] into the FMP ForeignKey field
     "shot": ("ForeignKey", lambda sg_val: sg_val["id"] if isinstance(sg_val, dict) else sg_val),
 }
 
@@ -51,31 +48,18 @@ SPECIAL_SG_KEYS = {
 # Helpers
 # ---------------------------
 
-def log(*args, **kwargs):
-    if debug_mode:
-        print(*args, **kwargs)
-
 def get_shotgun():
     if not (SG_URL and SG_SCRIPT_NAME and SG_SCRIPT_KEY):
         raise RuntimeError("ShotGrid credentials not set (SG_URL / SG_SCRIPT_NAME / SG_SCRIPT_KEY).")
     return Shotgun(SG_URL, SG_SCRIPT_NAME, SG_SCRIPT_KEY)
 
 def build_fields_to_query():
-    """
-    Build a list of SG field codes to request from ShotGrid based on FIELD_MAP.
-    For nested/special keys, include the high-level field code (e.g. 'shot').
-    """
-    fields = []
-    for sg_key in FIELD_MAP.keys():
-        # if sg_key is 'shot' we query 'shot' (ShotGrid returns a dict)
-        fields.append(sg_key)
-    # Always include id for debugging / reference
+    fields = list(FIELD_MAP.keys())
     if "id" not in fields:
         fields.append("id")
-    return list(dict.fromkeys(fields))  # remove duplicates while preserving order
+    return fields
 
 def fm_get_token():
-    """Authenticate and return FMP session token"""
     sess_url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/sessions"
     auth_string = f"{FMP_USER}:{FMP_PASSWORD}"
     auth_base64 = b64encode(auth_string.encode("utf-8")).decode("utf-8")
@@ -86,58 +70,33 @@ def fm_get_token():
     r = requests.post(sess_url, headers=headers)
     if r.status_code not in (200, 201):
         raise RuntimeError(f"Failed to create FileMaker session: {r.status_code} {r.text}")
-
-    data = r.json()
-    token = data.get("response", {}).get("token")
+    token = r.json().get("response", {}).get("token")
     if not token:
-        raise RuntimeError(f"No token found in FileMaker session response: {data}")
+        raise RuntimeError(f"No token found in FileMaker session response: {r.json()}")
     return token
 
 def fm_create_records(token, records_payload):
-    """
-    POST records to FileMaker layout.
-    Endpoint: POST /fmi/data/vLatest/databases/{db}/layouts/{layout}/records
-    """
     url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/layouts/{FMP_LAYOUT}/records"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    payload = {"records": records_payload}
-    r = requests.post(url, headers=headers, json=payload)
-    return r
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    return requests.post(url, headers=headers, json={"records": records_payload})
 
 def fm_close_session(token):
     url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/sessions/{token}"
-    headers = {"Authorization": f"Bearer {token}"}
     try:
-        requests.delete(url, headers=headers)
+        requests.delete(url, headers={"Authorization": f"Bearer {token}"})
     except Exception:
         pass
 
 def sg_value_to_fmp_value(sg_field_code, sg_value):
-    """
-    Convert the SG field value into an FMP-friendly representation.
-    Handles simple types, and specially handles entity refs (dicts).
-    """
-    # handle special mapping defined above
     if sg_field_code in SPECIAL_SG_KEYS:
         fmp_field, transform = SPECIAL_SG_KEYS[sg_field_code]
         try:
             return transform(sg_value)
         except Exception:
             return None
-
-    # For typical ShotGrid types:
-    # - dict (entity ref) -> use id or name? We generally want the name unless mapping expects id.
     if isinstance(sg_value, dict):
-        # prefer id if the mapping expects an id (we only special-case 'shot' above),
-        # otherwise use 'name' if available
         return sg_value.get("name") or sg_value.get("id")
-
-    # lists: join simple text fields
     if isinstance(sg_value, list):
-        # flatten list of simple items
         out = []
         for it in sg_value:
             if isinstance(it, dict):
@@ -145,8 +104,6 @@ def sg_value_to_fmp_value(sg_field_code, sg_value):
             else:
                 out.append(str(it))
         return ", ".join(out)
-
-    # everything else -> string or numeric as-is
     return sg_value
 
 # ---------------------------
@@ -155,20 +112,16 @@ def sg_value_to_fmp_value(sg_field_code, sg_value):
 
 @app.route("/send_plates", methods=["POST", "GET"])
 def index():
-    # --- Per-request debug flag ---
     debug_mode = request.args.get("debug") == "1"
 
-    # --- Local log function scoped to this request ---
     def log(*args, **kwargs):
         if debug_mode:
             print(*args, **kwargs)
 
     try:
-        # parse ids
         entity_type = request.values.get("entity_type", "Element")
         ids = None
 
-        # JSON body?
         if request.is_json:
             body = request.get_json(silent=True) or {}
             ids = body.get("entity_ids") or body.get("ids")
@@ -180,25 +133,18 @@ def index():
                 ids = [int(x) for x in ids_raw.split(",") if x.strip()]
 
         if not ids:
-            return jsonify({
-                "ok": False,
-                "error": "No entity IDs provided. Use JSON {entity_ids: [...] } or form/query ids=1,2,3"
-            }), 400
+            return jsonify({"ok": False, "error": "No entity IDs provided."}), 400
 
-        # Connect to ShotGrid
         sg = get_shotgun()
         fields = build_fields_to_query()
         log("Querying ShotGrid fields:", fields)
-        filters = [["id", "in", ids]]
-        sg_results = sg.find(entity_type, filters, fields)
+        sg_results = sg.find(entity_type, [["id", "in", ids]], fields)
         log("Found", len(sg_results), "results")
 
-        # --- DEBUG: show actual SG values for each element ---
         log("SG element fields for debug:")
         for e in sg_results:
             log(json.dumps(e, indent=2))
 
-        # --- Optional: show mapping -> FMP ---
         log("Preview of field mapping for each element:")
         for e in sg_results:
             field_preview = {}
@@ -207,7 +153,6 @@ def index():
                 field_preview[fmp_field] = val
             log(json.dumps({"sg_id": e.get("id"), "mapped_fields": field_preview}, indent=2))
 
-        # ---- Build FileMaker records ----
         records_to_create = []
         created_meta = []
         skipped_count = 0
@@ -215,43 +160,32 @@ def index():
         for ent in sg_results:
             fieldData = {}
 
+            # map regular fields
             for sg_key, fmp_field in FIELD_MAP.items():
-                if sg_key in ('shot', 'sg_latest_version'):
+                if sg_key in ("shot", "sg_latest_version"):
                     continue
-                
-                sg_val = ent.get(sg_key)
-                value = sg_value_to_fmp_value(sg_key, sg_val)
-                if value is not None:
-                    fieldData[fmp_field] = value
-            
-        # ----- Plate Name from latest_version -----
-        latest_ver = ent.get('latest_version')
-        if latest_ver:
-            fieldData['Plate Name'] = latest_ver.get('code') or latest_ver.get('id')
+                val = sg_value_to_fmp_value(sg_key, ent.get(sg_key))
+                if val is not None:
+                    fieldData[fmp_field] = val
 
-        # ----- ForeignKey from linked Shot -----
-        shot_ref = ent.get('shot')
-        if shot_ref:
-            fieldData['ForeignKey'] = shot_ref.get('id')
+            # handle Plate Name
+            latest_ver = ent.get("sg_latest_version")
+            if latest_ver:
+                fieldData["Plate Name"] = latest_ver.get("code") or latest_ver.get("id")
 
-        # Skip if no data
-        if not fieldData:
-            skipped_count += 1
-            created_meta.append({
-                "sg_id": ent.get("id"),
-                "status": "skipped",
-                "reason": "no mapped fields present"
-            })
-            continue
+            # handle ForeignKey from linked shot
+            shot_ref = ent.get("shot")
+            if shot_ref:
+                fieldData["ForeignKey"] = shot_ref.get("id")
 
-        records_to_create.append({"fieldData": fieldData})
-        created_meta.append({
-            "sg_id": ent.get("id"),
-            "status": "queued",
-            "fields": list(fieldData.keys())
-        })
+            if not fieldData:
+                skipped_count += 1
+                created_meta.append({"sg_id": ent.get("id"), "status": "skipped", "reason": "no mapped fields present"})
+                continue
 
-        # Debug preview
+            records_to_create.append({"fieldData": fieldData})
+            created_meta.append({"sg_id": ent.get("id"), "status": "queued", "fields": list(fieldData.keys())})
+
         if debug_mode:
             debug_payload = json.dumps(records_to_create, indent=2)
             log("DEBUG: Records about to be sent to FileMaker:\n", debug_payload)
@@ -261,7 +195,6 @@ def index():
                 mimetype="text/html"
             )
 
-        # --- Authenticate and send to FileMaker ---
         token = None
         try:
             token = fm_get_token()
@@ -284,10 +217,9 @@ def index():
                 "skipped": skipped_count,
                 "shotgrid_requested": len(sg_results),
                 "details": created_meta,
-                "fmp_response": resp_json.get("response", {})
+                "fmp_response": resp_json.get("response", {}),
             }
             return jsonify(result)
-
         finally:
             if token:
                 try:
@@ -298,13 +230,9 @@ def index():
 
     except Exception as exc:
         log("Exception:", traceback.format_exc())
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-            "trace": traceback.format_exc()
-        }), 500
-
+        return jsonify({"ok": False, "error": str(exc), "trace": traceback.format_exc()}), 500
 
 if __name__ == "__main__":
+    DEBUG = True
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=DEBUG)
