@@ -52,7 +52,7 @@ SPECIAL_SG_KEYS = {
 # ---------------------------
 
 def log(*args, **kwargs):
-    if DEBUG:
+    if debug_mode:
         print(*args, **kwargs)
 
 def get_shotgun():
