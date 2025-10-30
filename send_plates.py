@@ -63,27 +63,32 @@ def fm_close_session(token):
 # MAIN ENDPOINT
 # ---------------------------
 
-@app.route("/send_plates", methods=["POST"])
+@app.route("/send_plates", methods=["POST", "GET"])
 def send_plates():
-    sg = get_sg_connection()
+    # Grab parameters from query string (GET) or form/json body (POST)
+    if request.method == "POST":
+        entity_type = request.args.get("entity_type") or request.form.get("entity_type") or "Element"
+        selected_ids_raw = request.args.get("selected_ids") or request.form.get("selected_ids") or ""
+        debug_flag = (request.args.get("debug") or request.form.get("debug") or "").lower() in ("1", "true", "yes")
+    else:  # GET
+        entity_type = request.args.get("entity_type", "Element")
+        selected_ids_raw = request.args.get("selected_ids", "")
+        debug_flag = request.args.get("debug", "").lower() in ("1", "true", "yes")
 
-    # --- Parameters ---
-    entity_type = request.args.get("entity_type", "Element")
-    selected_ids = request.args.get("selected_ids", "")
-    debug = request.args.get("debug", "").lower() in ("1", "true", "yes")
-
-    if debug:
+    if debug_flag:
         print("🟡 DEBUG MODE ENABLED")
 
     try:
-        selected_ids = [int(x) for x in selected_ids.split(",") if x.strip().isdigit()]
+        selected_ids = [int(x) for x in selected_ids_raw.split(",") if x.strip().isdigit()]
     except Exception:
         return jsonify({"error": "Invalid selected_ids"}), 400
 
     if not selected_ids:
         return jsonify({"error": "No valid IDs provided"}), 400
 
-    # --- Query ShotGrid ---
+    # --- now your normal SG query and FMP sending logic ---
+    sg = get_sg_connection()
+
     fields = [
         "id",
         "sg_latest_version",
@@ -102,31 +107,23 @@ def send_plates():
         "shot",
         "shot.code",
     ]
-
-    if debug:
-        print(f"Querying fields: {fields}")
+    if debug_flag:
+        print("Querying ShotGrid fields:", fields)
 
     elements = sg.find(entity_type, [["id", "in", selected_ids]], fields)
 
-    if debug:
-        print(f"Found {len(elements)} element(s)")
-        for e in elements:
-            print(json.dumps(e, indent=2, default=str))
+    if debug_flag:
+        print(f"Found {len(elements)} results")
+        print("SG element fields for debug:")
+        for el in elements:
+            print(json.dumps(el, indent=2, default=str))
 
-    # --- Map SG → FileMaker ---
+    # --- MAP TO FILEMAKER ---
     fm_records = []
     for el in elements:
-        latest_version = el.get("sg_latest_version")
-        plate_name = None
-        if isinstance(latest_version, dict):
-            plate_name = latest_version.get("name") or latest_version.get("code")
-
-        foreign_key = None
-        shot_data = el.get("shot")
-        if isinstance(shot_data, dict):
-            foreign_key = shot_data.get("id")
-
-        record = {
+        plate_name = el.get("sg_latest_version", {}).get("name")
+        foreign_key = el.get("shot", {}).get("id")
+        mapped_fields = {
             "Plate Name": plate_name,
             "Slate": el.get("sg_slate"),
             "Source File Name": el.get("sg_camera_file_name"),
@@ -141,44 +138,24 @@ def send_plates():
             "Notes": el.get("description"),
             "ForeignKey": foreign_key,
         }
+        fm_field_data = {k: v for k, v in mapped_fields.items() if v not in (None, "", [])}
+        fm_records.append({"fieldData": fm_field_data})
 
-        # Only include non-empty fields
-        clean = {k: v for k, v in record.items() if v not in (None, "", [], {})}
-        fm_records.append({"fieldData": clean})
-
-    if debug:
-        print("Mapped FM records:\n", json.dumps(fm_records, indent=2))
-
-    # --- Send to FileMaker ---
+    # --- SEND TO FILEMAKER ---
     try:
         token = fm_get_token()
         url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/layouts/{FMP_LAYOUT}/records"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        payload = {"records": fm_records}
-
-        if debug:
-            print("Sending to FileMaker:", json.dumps(payload, indent=2))
-
-        r = requests.post(url, headers=headers, json=payload)
+        r = requests.post(url, headers=headers, json={"records": fm_records})
         result = r.json()
-
-        if debug:
-            print("FileMaker response:", json.dumps(result, indent=2))
-
-        fm_close_session(token)
-
     except Exception as e:
-        if debug:
-            print("❌ FileMaker Error:", traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Failed to send to FileMaker: {e}"}), 500
 
     return jsonify({
-        "message": f"✅ Sent {len(fm_records)} record(s) to FileMaker.",
-        "records_sent": len(fm_records),
-        "debug_mode": debug,
-        "filemaker_response": result if debug else "hidden",
+        "message": f"✅ Sent {len(fm_records)} records to FileMaker.",
+        "records": fm_records,
+        "filemaker_response": result if debug_flag else "hidden (debug off)"
     })
-
 
 # ---------------------------
 # MAIN
