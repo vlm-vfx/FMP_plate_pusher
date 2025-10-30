@@ -55,9 +55,14 @@ def get_shotgun():
 
 def build_fields_to_query():
     fields = list(FIELD_MAP.keys())
-    if "id" not in fields:
-        fields.append("id")
-    return fields
+    # Replace 'sg_latest_version' with actual nested field
+    # SG uses 'latest_version' as the entity ref
+    if 'sg_latest_version' in fields:
+        fields.remove('sg_latest_version')
+        fields.append('latest_version')
+    if 'id' not in fields:
+        fields.append('id')
+    return list(dict.fromkeys(fields))
 
 def fm_get_token():
     sess_url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/sessions"
@@ -112,16 +117,20 @@ def sg_value_to_fmp_value(sg_field_code, sg_value):
 
 @app.route("/send_plates", methods=["POST", "GET"])
 def index():
+    # --- Per-request debug flag ---
     debug_mode = request.args.get("debug") == "1"
 
+    # --- Local log function scoped to this request ---
     def log(*args, **kwargs):
         if debug_mode:
             print(*args, **kwargs)
 
     try:
+        # parse ids
         entity_type = request.values.get("entity_type", "Element")
         ids = None
 
+        # JSON body?
         if request.is_json:
             body = request.get_json(silent=True) or {}
             ids = body.get("entity_ids") or body.get("ids")
@@ -133,26 +142,41 @@ def index():
                 ids = [int(x) for x in ids_raw.split(",") if x.strip()]
 
         if not ids:
-            return jsonify({"ok": False, "error": "No entity IDs provided."}), 400
+            return jsonify({
+                "ok": False,
+                "error": "No entity IDs provided. Use JSON {entity_ids: [...] } or form/query ids=1,2,3"
+            }), 400
 
+        # Connect to ShotGrid
         sg = get_shotgun()
         fields = build_fields_to_query()
         log("Querying ShotGrid fields:", fields)
-        sg_results = sg.find(entity_type, [["id", "in", ids]], fields)
+        filters = [["id", "in", ids]]
+        sg_results = sg.find(entity_type, filters, fields)
         log("Found", len(sg_results), "results")
 
+        # --- DEBUG: show actual SG values for each element ---
         log("SG element fields for debug:")
         for e in sg_results:
             log(json.dumps(e, indent=2))
 
+        # --- Optional: show mapping -> FMP ---
         log("Preview of field mapping for each element:")
         for e in sg_results:
             field_preview = {}
             for sg_key, fmp_field in FIELD_MAP.items():
-                val = sg_value_to_fmp_value(sg_key, e.get(sg_key))
-                field_preview[fmp_field] = val
+                if sg_key == 'sg_latest_version':
+                    latest = e.get('latest_version')
+                    field_preview[fmp_field] = latest.get('code') if latest else None
+                elif sg_key == 'shot':
+                    shot_ref = e.get('shot')
+                    field_preview[fmp_field] = shot_ref.get('id') if shot_ref else None
+                else:
+                    val = sg_value_to_fmp_value(sg_key, e.get(sg_key))
+                    field_preview[fmp_field] = val
             log(json.dumps({"sg_id": e.get("id"), "mapped_fields": field_preview}, indent=2))
 
+        # ---- Build FileMaker records ----
         records_to_create = []
         created_meta = []
         skipped_count = 0
@@ -160,32 +184,42 @@ def index():
         for ent in sg_results:
             fieldData = {}
 
-            # map regular fields
             for sg_key, fmp_field in FIELD_MAP.items():
-                if sg_key in ("shot", "sg_latest_version"):
+                if sg_key == 'sg_latest_version':
+                    latest = ent.get('latest_version')
+                    if latest:
+                        fieldData[fmp_field] = latest.get('code') or latest.get('id')
                     continue
-                val = sg_value_to_fmp_value(sg_key, ent.get(sg_key))
-                if val is not None:
-                    fieldData[fmp_field] = val
 
-            # handle Plate Name
-            latest_ver = ent.get("sg_latest_version")
-            if latest_ver:
-                fieldData["Plate Name"] = latest_ver.get("code") or latest_ver.get("id")
+                if sg_key == 'shot':
+                    shot_ref = ent.get('shot')
+                    if shot_ref:
+                        fieldData[fmp_field] = shot_ref.get('id')
+                    continue
 
-            # handle ForeignKey from linked shot
-            shot_ref = ent.get("shot")
-            if shot_ref:
-                fieldData["ForeignKey"] = shot_ref.get("id")
+                sg_val = ent.get(sg_key)
+                value = sg_value_to_fmp_value(sg_key, sg_val)
+                if value is not None:
+                    fieldData[fmp_field] = value
 
+            # Skip if no data
             if not fieldData:
                 skipped_count += 1
-                created_meta.append({"sg_id": ent.get("id"), "status": "skipped", "reason": "no mapped fields present"})
+                created_meta.append({
+                    "sg_id": ent.get("id"),
+                    "status": "skipped",
+                    "reason": "no mapped fields present"
+                })
                 continue
 
             records_to_create.append({"fieldData": fieldData})
-            created_meta.append({"sg_id": ent.get("id"), "status": "queued", "fields": list(fieldData.keys())})
+            created_meta.append({
+                "sg_id": ent.get("id"),
+                "status": "queued",
+                "fields": list(fieldData.keys())
+            })
 
+        # Debug preview
         if debug_mode:
             debug_payload = json.dumps(records_to_create, indent=2)
             log("DEBUG: Records about to be sent to FileMaker:\n", debug_payload)
@@ -195,6 +229,7 @@ def index():
                 mimetype="text/html"
             )
 
+        # --- Authenticate and send to FileMaker ---
         token = None
         try:
             token = fm_get_token()
@@ -217,9 +252,10 @@ def index():
                 "skipped": skipped_count,
                 "shotgrid_requested": len(sg_results),
                 "details": created_meta,
-                "fmp_response": resp_json.get("response", {}),
+                "fmp_response": resp_json.get("response", {})
             }
             return jsonify(result)
+
         finally:
             if token:
                 try:
@@ -230,7 +266,11 @@ def index():
 
     except Exception as exc:
         log("Exception:", traceback.format_exc())
-        return jsonify({"ok": False, "error": str(exc), "trace": traceback.format_exc()}), 500
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "trace": traceback.format_exc()
+        }), 500
 
 if __name__ == "__main__":
     DEBUG = True
