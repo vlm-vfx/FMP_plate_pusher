@@ -268,10 +268,8 @@ def index():
         
         # --- DEBUG: print payload before sending ---
         if DEBUG:
-            print("\n--- DEBUG: Records about to be sent to FileMaker ---")
-            for idx, rec in enumerate(records_to_create, start=1):
-                print(f"Record {idx}: {json.dumps(rec, indent=2)}")
-            print("--- END DEBUG ---\n")
+            debug_payload = json.dumps(records_to_create, indent=2)
+            return Response(f"<h2>DEBUG: Records to send to FileMaker</h2><pre>{debug_payload}</pre>", mimetype="text/html")
 
         # Authenticate to FileMaker and create records
         token = None
