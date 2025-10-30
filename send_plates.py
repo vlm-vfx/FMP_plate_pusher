@@ -156,162 +156,120 @@ def sg_value_to_fmp_value(sg_field_code, sg_value):
 # Flask endpoint
 # ---------------------------
 
-@app.route("/send_plates", methods=["POST", "GET"])
-def index():
-    # --- Per-request debug flag ---
-    debug_mode = request.args.get("debug") == "1"
+@app.route("/send_plates", methods=["POST"])
+def send_plates():
+    sg = get_sg_connection()
 
-    # --- Local log function scoped to this request ---
-    def log(*args, **kwargs):
-        if debug_mode:
-            print(*args, **kwargs)
+    # --- PARAMETERS ---
+    entity_type = request.args.get("entity_type", "Element")
+    selected_ids = request.args.get("selected_ids", "")
+    debug_flag = request.args.get("debug", "").lower() in ("1", "true", "yes")
+    if debug_flag:
+        print("🟡 DEBUG MODE ENABLED")
 
     try:
-        # parse ids
-        entity_type = request.values.get("entity_type", "Element")
-        ids = None
+        selected_ids = [int(x) for x in selected_ids.split(",") if x.strip().isdigit()]
+    except Exception:
+        return jsonify({"error": "Invalid selected_ids"}), 400
 
-        # JSON body?
-        if request.is_json:
-            body = request.get_json(silent=True) or {}
-            ids = body.get("entity_ids") or body.get("ids")
-            if isinstance(ids, str):
-                ids = [int(x) for x in ids.split(",") if x.strip()]
-        else:
-            ids_raw = request.values.get("ids")
-            if ids_raw:
-                ids = [int(x) for x in ids_raw.split(",") if x.strip()]
+    if not selected_ids:
+        return jsonify({"error": "No valid IDs provided"}), 400
 
-        if not ids:
-            return jsonify({
-                "ok": False,
-                "error": "No entity IDs provided. Use JSON {entity_ids: [...] } or form/query ids=1,2,3"
-            }), 400
+    # --- SG QUERY ---
+    fields = [
+        "id",
+        "sg_latest_version",
+        "sg_latest_version.Code",
+        "sg_slate",
+        "sg_camera_file_name",
+        "sg_source_in",
+        "sg_source_out",
+        "sg_turnover",
+        "sg_head_in",
+        "sg_cut_in",
+        "sg_cut_out",
+        "sg_tail_out",
+        "sg_lut",
+        "description",
+        "shot",
+        "shot.code",
+    ]
+    if debug_flag:
+        print("Querying ShotGrid fields:", fields)
 
-        # Connect to ShotGrid
-        sg = get_shotgun()
-        fields = build_fields_to_query()
-        log("Querying ShotGrid fields:", fields)
-        filters = [["id", "in", ids]]
-        sg_results = sg.find(entity_type, filters, fields)
-        log("Found", len(sg_results), "results")
+    elements = sg.find(entity_type, [["id", "in", selected_ids]], fields)
 
-        # --- DEBUG: show actual SG values for each element ---
-        log("SG element fields for debug:")
-        for e in sg_results:
-            log(json.dumps(e, indent=2))
+    if debug_flag:
+        print(f"Found {len(elements)} results")
+        print("SG element fields for debug:")
+        for el in elements:
+            print(json.dumps(el, indent=2, default=str))
 
-        # --- Optional: show mapping -> FMP ---
-        log("Preview of field mapping for each element:")
-        for e in sg_results:
-            field_preview = {}
-            for sg_key, fmp_field in FIELD_MAP.items():
-                if sg_key == 'sg_latest_version':
-                    latest = e.get('latest_version')
-                    field_preview[fmp_field] = latest.get('code') if latest else None
-                elif sg_key == 'shot':
-                    shot_ref = e.get('shot')
-                    field_preview[fmp_field] = shot_ref.get('id') if shot_ref else None
-                else:
-                    val = sg_value_to_fmp_value(sg_key, e.get(sg_key))
-                    field_preview[fmp_field] = val
-            log(json.dumps({"sg_id": e.get("id"), "mapped_fields": field_preview}, indent=2))
+    # --- MAP TO FILEMAKER ---
+    fm_records = []
+    preview = []
 
-        # ---- Build FileMaker records ----
-        records_to_create = []
-        created_meta = []
-        skipped_count = 0
+    for el in elements:
+        plate_name = (
+            el["sg_latest_version"].get("name")
+            if el.get("sg_latest_version")
+            else None
+        )
+        foreign_key = el["shot"]["id"] if el.get("shot") else None
 
-        for ent in sg_results:
-            fieldData = {}
+        mapped_fields = {
+            "Plate Name": plate_name,
+            "Slate": el.get("sg_slate"),
+            "Source File Name": el.get("sg_camera_file_name"),
+            "Timecode In": el.get("sg_source_in"),
+            "Timecode Out": el.get("sg_source_out"),
+            "Turnover Package": el.get("sg_turnover"),
+            "Head In": el.get("sg_head_in"),
+            "Cut In": el.get("sg_cut_in"),
+            "Cut Out": el.get("sg_cut_out"),
+            "Tail Out": el.get("sg_tail_out"),
+            "LUT": el.get("sg_lut"),
+            "Notes": el.get("description"),
+            "ForeignKey": foreign_key,
+        }
 
-            for sg_key, fmp_field in FIELD_MAP.items():
-                if sg_key == 'sg_latest_version':
-                    latest = ent.get('latest_version')
-                    if latest:
-                        fieldData[fmp_field] = latest.get('code') or latest.get('id')
-                    continue
+        preview.append({"sg_id": el["id"], "mapped_fields": mapped_fields})
 
-                if sg_key == 'shot':
-                    shot_ref = ent.get('shot')
-                    if shot_ref:
-                        fieldData[fmp_field] = shot_ref.get('id')
-                    continue
+        # Only send non-null values to FileMaker
+        fm_field_data = {k: v for k, v in mapped_fields.items() if v not in (None, "", [])}
+        fm_records.append({"fieldData": fm_field_data})
 
-                sg_val = ent.get(sg_key)
-                value = sg_value_to_fmp_value(sg_key, sg_val)
-                if value is not None:
-                    fieldData[fmp_field] = value
+    if debug_flag:
+        print("Preview of field mapping for each element:")
+        for p in preview:
+            print(json.dumps(p, indent=2))
+        print("DEBUG: Records about to be sent to FileMaker:\n", json.dumps(fm_records, indent=2))
 
-            # Skip if no data
-            if not fieldData:
-                skipped_count += 1
-                created_meta.append({
-                    "sg_id": ent.get("id"),
-                    "status": "skipped",
-                    "reason": "no mapped fields present"
-                })
-                continue
+    # --- SEND TO FILEMAKER ---
+    try:
+        token = fm_get_token()
+        payload = {"data": fm_records}
 
-            records_to_create.append({"fieldData": fieldData})
-            created_meta.append({
-                "sg_id": ent.get("id"),
-                "status": "queued",
-                "fields": list(fieldData.keys())
-            })
+        if debug_flag:
+            print("Sending payload to FileMaker:", json.dumps(payload, indent=2))
 
-        # Debug preview
-        if debug_mode:
-            debug_payload = json.dumps(records_to_create, indent=2)
-            log("DEBUG: Records about to be sent to FileMaker:\n", debug_payload)
-            return Response(
-                "<h2>DEBUG: Records about to be sent to FileMaker</h2>"
-                f"<pre>{debug_payload}</pre>",
-                mimetype="text/html"
-            )
+        url = f"{FMP_BASE_URL}/fmi/data/vLatest/databases/{FMP_DATABASE}/layouts/{FMP_LAYOUT}/records"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        r = requests.post(url, headers=headers, json=payload)
+        result = r.json()
 
-        # --- Authenticate and send to FileMaker ---
-        token = None
-        try:
-            token = fm_get_token()
-            log("Obtained FMP token:", token)
-            r = fm_create_records(token, records_to_create)
-            if r.status_code not in (200, 201):
-                try:
-                    body = r.json()
-                except Exception:
-                    body = r.text
-                raise RuntimeError(f"FileMaker create failed {r.status_code}: {body}")
+        if debug_flag:
+            print("FileMaker response:", json.dumps(result, indent=2))
 
-            resp_json = r.json()
-            fm_created = len(resp_json.get("response", {}).get("data", []))
+    except Exception as e:
+        return jsonify({"error": f"Failed to send to FileMaker: {e}"}), 500
 
-            result = {
-                "ok": True,
-                "requested": len(records_to_create),
-                "created": fm_created,
-                "skipped": skipped_count,
-                "shotgrid_requested": len(sg_results),
-                "details": created_meta,
-                "fmp_response": resp_json.get("response", {})
-            }
-            return jsonify(result)
+    return jsonify({
+        "message": f"✅ Sent {len(fm_records)} records to FileMaker.",
+        "records": fm_records,
+        "filemaker_response": result if debug_flag else "hidden (debug off)"
+    })
 
-        finally:
-            if token:
-                try:
-                    fm_close_session(token)
-                    log("Closed FMP session.")
-                except Exception:
-                    pass
-
-    except Exception as exc:
-        log("Exception:", traceback.format_exc())
-        return jsonify({
-            "ok": False,
-            "error": str(exc),
-            "trace": traceback.format_exc()
-        }), 500
 
 if __name__ == "__main__":
     DEBUG = True
